@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
+#![feature(alloc_error_handler)]
 
+use core::alloc::Layout;
 use panic_semihosting as _;
 use cortex_m_rt::entry;
 
@@ -8,6 +10,7 @@ use daisy_bsp as daisy;
 use daisy::led::Led;
 
 use cortex_m::asm;
+use alloc_cortex_m::CortexMHeap;
 
 // use micromath::F32Ext;
 use libm::sqrtf;
@@ -39,6 +42,14 @@ use crate::stm32::{I2C1, Peripherals};
 use spectrum_analyzer::scaling::divide_by_N;
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit};
+
+
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
+#[alloc_error_handler]
+fn oom(_: Layout) -> ! {
+    loop {loggit!("OOM");}
+}
 
 #[entry]
 fn main() -> ! {
@@ -78,7 +89,12 @@ fn main() -> ! {
 
     let mut adc1_ref_pot = pins.SEED_PIN_15.into_analog();
     let scale_factor = 256i16 / 2;//ccdr.clocks.sys_ck().0 as f32 / 65_535.;
-    const BUFFER_SIZE: usize = 512;
+    const BUFFER_SIZE: usize = 2048;
+    // Initialize the allocator BEFORE you use it
+    let start = cortex_m_rt::heap_start() as usize;
+    let size = 1_048_576; // in bytes
+    unsafe { ALLOCATOR.init(start, size) }
+
     loggit!("Scale Factor:{:?}", scale_factor);
 
     let mut bit = false;
@@ -102,28 +118,29 @@ fn main() -> ! {
     // - main loop ------------------------------------------------------------
     let one_second = ccdr.clocks.sys_ck().0;
     let mut pcm_buffer: [i16; BUFFER_SIZE] = [0; BUFFER_SIZE];
+    let mut fbuf: [f32; BUFFER_SIZE] = [0f32; BUFFER_SIZE];
     loop {
         for i in 0..BUFFER_SIZE
         {
             let raw: u32 = adc1.read(&mut adc1_ref_pot).unwrap();
             pcm_buffer[i] = raw as i16 - scale_factor;
+            fbuf[i] = raw as f32 - scale_factor as f32
         }
         let mut max: i16 = pcm_buffer.iter().max().unwrap_or(&0).clone();
         let mut min: i16 = pcm_buffer.iter().min().unwrap_or(&0).clone();
         let raw_volume = max - min;
         let volume = (ease_out(raw_volume as f32, 0f32, 7f32, 255f32) + 0.002f32) as u8;
 
-        let mut fbuf = pcm_buffer.into_iter().map(|x| *x as f32);
-
         // loggit!("Volume:{:?}", volume);
 
-        let hann_window = hann_window(&pcm_buffer);
+        let hann_window = hann_window(&fbuf);
+
         // calc spectrum
         let spectrum_hann_window = samples_fft_to_spectrum(
             // (windowed) samples
             &hann_window,
             // sampling rate
-            44100,
+            22050,
             // optional frequency limit: e.g. only interested in frequencies 50 <= f <= 150?
             FrequencyLimit::All,
             // optional scale
@@ -131,9 +148,9 @@ fn main() -> ! {
         )
             .unwrap();
 
-        for (fr, fr_val) in spectrum_hann_window.data().iter() {
-            loggit!("{}Hz => {}", fr, fr_val)
-        }
+        // for (fr, fr_val) in spectrum_hann_window.data().iter() {
+        //     loggit!("{}Hz => {}", fr, fr_val)
+        // }
 
         if bit {
             led_user.off();
