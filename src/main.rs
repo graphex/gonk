@@ -12,11 +12,12 @@ use daisy::led::Led;
 use cortex_m::asm;
 use alloc_cortex_m::CortexMHeap;
 
-// use micromath::F32Ext;
 use libm::sqrtf;
 use daisy::hal;
 use daisy_bsp::loggit;
 use hal::prelude::*;
+use hal::pac::RTC;
+use hal::pac::rtc;
 use hal::rcc::rec::AdcClkSel;
 use hal::rcc::rec::I2c123ClkSel;
 use hal::rcc::ResetEnable;
@@ -36,6 +37,8 @@ use daisy_bsp::hal::rcc::CoreClocks;
 use daisy_bsp::pins::Pins;
 use adafruit_led_backpack::*;
 use daisy_bsp::hal::gpio::gpiob::PB6;
+// use daisy::pac::rtc;
+// use daisy::pac::RTC;
 use ht16k33::{Display, HT16K33, LedLocation};
 use crate::hal::rcc::Ccdr;
 use crate::i2c::I2c;
@@ -63,7 +66,9 @@ fn main() -> ! {
     let dp = daisy::pac::Peripherals::take().unwrap();
     // Constrain and Freeze power
     let pwr = dp.PWR.constrain();
-    let pwrcfg = pwr.freeze();
+    let mut pwrcfg = pwr.freeze();
+    // // Take the backup power domain
+    // let backup = pwrcfg.backup().unwrap();
     // Constrain and Freeze clock
     let mut rcc = dp.RCC.constrain();
     let mut ccdr = rcc
@@ -84,6 +89,13 @@ fn main() -> ! {
                                  dp.GPIOG.split(ccdr.peripheral.GPIOG));
 
     let mut delay = Delay::new(cp.SYST, ccdr.clocks);
+
+    // let mut rtc = rtc:Rtc::open_or_init(
+    //     dp.RTC,
+    //     backup.RTC,
+    //     rtc::RtcClock::Lsi,
+    //     &ccdr.clocks,
+    // );
 
 
     loggit!("Board started");
@@ -106,7 +118,7 @@ fn main() -> ! {
 
     const BUFFER_SIZE: usize = 1024;
     const SAMPLE_RATE: u32 = 450_000;
-    const SCALE_FACTOR = 256i16 / 2;
+    const SCALE_FACTOR: i16 = 256i16 / 2;
     //ccdr.clocks.sys_ck().0 as f32 / 65_535.;
     loggit!("Scale Factor:{:?}", SCALE_FACTOR);
 
