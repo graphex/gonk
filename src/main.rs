@@ -2,8 +2,12 @@
 #![no_std]
 #![feature(alloc_error_handler)]
 
+pub mod dtmf_signals;
+pub mod space_command_remote;
+
 use core::alloc::Layout;
-use panic_semihosting as _;
+// use panic_semihosting as _;
+use panic_halt as _;
 use cortex_m_rt::entry;
 
 use daisy_bsp as daisy;
@@ -14,7 +18,7 @@ use alloc_cortex_m::CortexMHeap;
 
 use libm::sqrtf;
 use daisy::hal;
-use daisy_bsp::loggit;
+// use daisy_bsp::loggit;
 use hal::prelude::*;
 use hal::pac::RTC;
 use hal::pac::rtc;
@@ -48,13 +52,16 @@ use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit, FrequencySpectrum};
 use crate::hal::gpio::Output;
 
+use crate::{dtmf_signals::*, space_command_remote::*};
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 #[alloc_error_handler]
 fn oom(_: Layout) -> ! {
-    loop { loggit!("OOM"); }
+    loop {
+        ;//loggit!("OOM");
+    }
 }
 
 #[entry]
@@ -98,7 +105,7 @@ fn main() -> ! {
     // );
 
 
-    loggit!("Board started");
+    //loggit!("Board started");
 
     // Initialize the heap allocator
     let start = cortex_m_rt::heap_start() as usize;
@@ -120,7 +127,7 @@ fn main() -> ! {
     const SAMPLE_RATE: u32 = 450_000;
     const SCALE_FACTOR: i16 = 256i16 / 2;
     //ccdr.clocks.sys_ck().0 as f32 / 65_535.;
-    loggit!("Scale Factor:{:?}", SCALE_FACTOR);
+    //loggit!("Scale Factor:{:?}", SCALE_FACTOR);
 
     let mut adc1_ref_pot = pins.SEED_PIN_15.into_analog();
     let mut bit = false;
@@ -190,32 +197,28 @@ fn main() -> ! {
         }
         bit = !bit;
 
-        // for (fr, fr_val) in spectrum_hann_window.data().iter() {
-        //     loggit!("{}Hz => {}", fr, fr_val)
-        // }
-        let ch_dn = max_pwr_in_range(&spectrum_hann_window,
-                                     FrequencyLimit::Range(39_980f32, 40_780f32));
-        let vol = max_pwr_in_range(&spectrum_hann_window,
-                                   FrequencyLimit::Range(37_480f32, 38_280f32));
-        let off_on = max_pwr_in_range(&spectrum_hann_window,
-                                      FrequencyLimit::Range(38_480f32, 39_280f32));
-        let ch_up = max_pwr_in_range(&spectrum_hann_window,
-                                     FrequencyLimit::Range(40_980f32, 41_780f32));
-        let powers = [ch_dn, vol, off_on, ch_up];
-        // let powers = [vol, off_on, ch_dn, ch_up];
-        let scaled_powers = powers.iter().map(|x| (libm::fminf(7f32,ease_out(*x as f32, 0f32, 7f32, 10f32)) as u8));
+        let buttons = [
+            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_DN, &spectrum_hann_window),
+            RemoteButtonEval::from_spectrum(RemoteSignals::VOLUME, &spectrum_hann_window),
+            RemoteButtonEval::from_spectrum(RemoteSignals::OFF_ON, &spectrum_hann_window),
+            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_UP, &spectrum_hann_window),
+        ];
+
         let mut col = 4u8;
-        let mut idx:usize = 0;
+        let mut idx: usize = 0;
 
         led_matrix.clear_display_buffer();
-        for curpwr in scaled_powers {
-            // loggit!("Column {} => [{}] {}", col, powers[idx], curpwr);
+        for btn in buttons {
+            let curpwr = btn.display_range();
             for k in 0..curpwr {
                 led_matrix.update_bicolor_led(col, k, Color::Green);
             }
             if (curpwr > 3) {
                 led_matrix.update_bicolor_led(col, curpwr - 1, Color::Yellow);
                 led_matrix.update_bicolor_led(col, curpwr, Color::Red);
+            }
+            if btn.triggered() {
+                led_matrix.update_bicolor_led(col, 7, Color::Red);
             }
             col = col + 1;
             idx = idx + 1;
@@ -268,20 +271,13 @@ impl TestBit {
     }
 }
 
-fn max_pwr_in_range(spectrum: &FrequencySpectrum, range: FrequencyLimit) -> f32 {
-    let mut max = 0f32;
-    for (fr, fr_val) in spectrum.data().iter() {
-        if fr.val() > range.maybe_min().unwrap_or(0f32)
-            && fr.val() < range.maybe_max().unwrap_or(42_000f32) {
-            if fr_val.val() > max {
-                max = fr_val.val();
-            }
-        }
-    }
-    max
-}
 
 fn ease_out(t: f32, b: f32, c: f32, d: f32) -> f32 {
     let t = t / d - 1f32;
     c * sqrtf(1f32 - t * t) + b
 }
+
+
+
+
+

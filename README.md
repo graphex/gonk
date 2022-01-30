@@ -35,8 +35,7 @@ brew install dfu-util
 rustup component add llvm-tools-preview
 cargo install cargo-binutils
 
-cargo +nightly build --release
-cargo +nightly objcopy --release -- -O binary gonk.bin
-# dfu-util -a 0 -s 0x08000000:leave -D gonk.bin
-dfu-util -a 0 -s 0x08000000:1024 -D gonk.bin
+cargo build --release
+cargo objcopy --release -- -O binary gonk.bin
+dfu-util -a 0 -s 0x08000000 -D gonk.bin
 ```
