@@ -4,6 +4,7 @@
 
 pub mod dtmf_signals;
 pub mod space_command_remote;
+pub mod goertzel;
 
 use core::alloc::Layout;
 // use panic_semihosting as _;
@@ -18,7 +19,7 @@ use alloc_cortex_m::CortexMHeap;
 
 use libm::sqrtf;
 use daisy::hal;
-// use daisy_bsp::loggit;
+use daisy_bsp::loggit;
 use hal::prelude::*;
 use hal::pac::RTC;
 use hal::pac::rtc;
@@ -59,9 +60,11 @@ static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 #[alloc_error_handler]
 fn oom(_: Layout) -> ! {
-    loop {
-        ;//loggit!("OOM");
-    }
+    //TODO: blink the user LED in a pattern
+    // loop {
+    //     ;//loggit!("OOM");
+    // }
+    panic!()
 }
 
 #[entry]
@@ -124,7 +127,7 @@ fn main() -> ! {
     adc1.set_sample_time(T_1);
 
     const BUFFER_SIZE: usize = 1024;
-    const SAMPLE_RATE: u32 = 450_000;
+    const SAMPLE_RATE: u32 = 460_000;
     const SCALE_FACTOR: i16 = 256i16 / 2;
     //ccdr.clocks.sys_ck().0 as f32 / 65_535.;
     //loggit!("Scale Factor:{:?}", SCALE_FACTOR);
@@ -158,8 +161,9 @@ fn main() -> ! {
     let mut fbuf: [f32; BUFFER_SIZE] = [0f32; BUFFER_SIZE];
     loop {
         //load the buffer manually
-        //getting about 450khz (SAMPLE_RATE) with what we do in this loop
+        //getting about 450kHz (SAMPLE_RATE) with what we do in this loop
         // (36MHz adc_ker_ck_input * 80 clock cycles per iteration)
+        // ok oscope is saying about 500kHz
         for i in 0..BUFFER_SIZE
         {
             test_bit.toggle();
@@ -170,21 +174,28 @@ fn main() -> ! {
         let mut max: i16 = pcm_buffer.iter().max().unwrap_or(&0).clone();
         let mut min: i16 = pcm_buffer.iter().min().unwrap_or(&0).clone();
         let raw_volume = max - min;
-        let volume = (ease_out(raw_volume as f32, 0f32, 7f32, 255f32) + 0.002f32) as u8;
+        let volume = (ease_out(raw_volume as f32, 0f32, 3f32, 255f32) + 0.002f32) as u8;
 
         // loggit!("Volume:{:?}", volume);
 
         let hann_window = hann_window(&fbuf);
 
-        // calc spectrum
-        let spectrum_hann_window = samples_fft_to_spectrum(
-            // (windowed) samples
+        // calc spectra
+        let dtmf_spectrum = samples_fft_to_spectrum(
             &hann_window,
-            // sampling rate
             SAMPLE_RATE,
-            // optional frequency limit: e.g. only interested in frequencies 50 <= f <= 150?
+            FrequencyLimit::Range(600f32, 1700f32),
+            Some(&divide_by_N),
+        )
+            .unwrap();
+        // for (fr, fr_val) in dtmf_spectrum.data().iter() {
+        //     loggit!("{}Hz => {}", fr, fr_val)
+        // }
+
+        let remote_spectrum = samples_fft_to_spectrum(
+            &hann_window,
+            SAMPLE_RATE,
             FrequencyLimit::Range(37_000f32, 42_000f32),
-            // optional scale
             Some(&divide_by_N),
         )
             .unwrap();
@@ -197,18 +208,63 @@ fn main() -> ! {
         }
         bit = !bit;
 
-        let buttons = [
-            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_DN, &spectrum_hann_window),
-            RemoteButtonEval::from_spectrum(RemoteSignals::VOLUME, &spectrum_hann_window),
-            RemoteButtonEval::from_spectrum(RemoteSignals::OFF_ON, &spectrum_hann_window),
-            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_UP, &spectrum_hann_window),
+        let remote_buttons = [
+            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_DN, &remote_spectrum),
+            RemoteButtonEval::from_spectrum(RemoteSignals::VOLUME, &remote_spectrum),
+            RemoteButtonEval::from_spectrum(RemoteSignals::OFF_ON, &remote_spectrum),
+            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_UP, &remote_spectrum),
         ];
+
+        let dtmf_keypad = [
+            [
+                DtmfButtonEval::from_spectrum(DtmfSignals::_1, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_2, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_3, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_A, &dtmf_spectrum),
+            ],
+            [
+                DtmfButtonEval::from_spectrum(DtmfSignals::_4, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_5, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_6, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_B, &dtmf_spectrum),
+            ],
+            [
+                DtmfButtonEval::from_spectrum(DtmfSignals::_7, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_8, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_9, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_C, &dtmf_spectrum),
+            ],
+            [
+                DtmfButtonEval::from_spectrum(DtmfSignals::_STAR, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_0, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_POUND, &dtmf_spectrum),
+                DtmfButtonEval::from_spectrum(DtmfSignals::_D, &dtmf_spectrum),
+            ],
+        ];
+
+        //--- display updates
+
+        led_matrix.clear_display_buffer();
+
+        let mut r = 0u8;
+        let mut c = 0u8;
+        for row in dtmf_keypad {
+            for key in row {
+                if key.either_triggered() {
+                    led_matrix.update_bicolor_led(c, r + 4, Color::Green);
+                }
+                if key.triggered() {
+                    led_matrix.update_bicolor_led(c, r + 4, Color::Red);
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+            c = 0u8;
+        }
 
         let mut col = 4u8;
         let mut idx: usize = 0;
-
-        led_matrix.clear_display_buffer();
-        for btn in buttons {
+        for btn in remote_buttons {
             let curpwr = btn.display_range();
             for k in 0..curpwr {
                 led_matrix.update_bicolor_led(col, k, Color::Green);
@@ -227,19 +283,10 @@ fn main() -> ! {
 
         for j in 0..volume {
             led_matrix.update_bicolor_led(0, j, Color::Green);
-            led_matrix.update_bicolor_led(1, j, Color::Green);
-            led_matrix.update_bicolor_led(2, j, Color::Green);
-            led_matrix.update_bicolor_led(3, j, Color::Green);
         }
-        if (volume > 3) {
+        if (volume > 2) {
             led_matrix.update_bicolor_led(0, volume - 1, Color::Yellow);
-            led_matrix.update_bicolor_led(1, volume - 1, Color::Yellow);
-            led_matrix.update_bicolor_led(2, volume - 1, Color::Yellow);
-            led_matrix.update_bicolor_led(3, volume - 1, Color::Yellow);
             led_matrix.update_bicolor_led(0, volume, Color::Red);
-            led_matrix.update_bicolor_led(1, volume, Color::Red);
-            led_matrix.update_bicolor_led(2, volume, Color::Red);
-            led_matrix.update_bicolor_led(3, volume, Color::Red);
         }
 
         led_matrix.write_display_buffer().unwrap();
