@@ -17,7 +17,7 @@ pub struct Vn {
 }
 
 /// Holds data for a Goertzel filter
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Filter {
     /// The frequency of the filter
     f: f32,
@@ -82,7 +82,7 @@ pub fn dbm(power: f32) -> f32 {
 }
 
 /*
-This class was modified from https://github.com/sveljko/goertzel
+This code was modified from https://github.com/sveljko/goertzel
 
 The MIT License (MIT)
 

@@ -44,16 +44,20 @@ use adafruit_led_backpack::*;
 use daisy_bsp::hal::gpio::gpiob::PB6;
 // use daisy::pac::rtc;
 // use daisy::pac::RTC;
+use hashbrown::HashMap;
+use embedded_time::Clock;
+use fugit::Instant;
 use ht16k33::{Display, HT16K33, LedLocation};
 use crate::hal::rcc::Ccdr;
 use crate::i2c::I2c;
 use crate::stm32::{I2C1, Peripherals};
 use spectrum_analyzer::scaling::divide_by_N;
 use spectrum_analyzer::windows::hann_window;
-use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit, FrequencySpectrum};
+use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyValue, FrequencyLimit, FrequencySpectrum};
 use crate::hal::gpio::Output;
 
 use crate::{dtmf_signals::*, space_command_remote::*};
+use crate::goertzel::Filter;
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
@@ -126,11 +130,24 @@ fn main() -> ! {
     adc1.set_resolution(adc::Resolution::EIGHTBIT);
     adc1.set_sample_time(T_1);
 
-    const BUFFER_SIZE: usize = 1024;
-    const SAMPLE_RATE: u32 = 460_000;
+    const BUFFER_SIZE: usize = 2048;
+    const SAMPLE_RATE: u32 = 430_000;
     const SCALE_FACTOR: i16 = 256i16 / 2;
     //ccdr.clocks.sys_ck().0 as f32 / 65_535.;
     //loggit!("Scale Factor:{:?}", SCALE_FACTOR);
+
+    //set up goertzel filters for each of the 12 frequencies we are interested in
+    let freqs = [
+        RemFreqs::CHANNEL_DN, RemFreqs::VOLUME, RemFreqs::OFF_ON, RemFreqs::CHANNEL_UP,
+        DtmfFreqs::ROW_A, DtmfFreqs::ROW_B, DtmfFreqs::ROW_C, DtmfFreqs::ROW_D,
+        DtmfFreqs::COL_1, DtmfFreqs::COL_2, DtmfFreqs::COL_3, DtmfFreqs::COL_A,
+    ];
+    let filters: HashMap<FreqKey, Filter> = freqs.map(|curFreq|
+        (
+            FreqKey::from(curFreq),
+            Filter::new(curFreq, SAMPLE_RATE as f32),
+        )
+    ).iter().cloned().collect();
 
     let mut adc1_ref_pot = pins.SEED_PIN_15.into_analog();
     let mut bit = false;
@@ -161,9 +178,8 @@ fn main() -> ! {
     let mut fbuf: [f32; BUFFER_SIZE] = [0f32; BUFFER_SIZE];
     loop {
         //load the buffer manually
-        //getting about 450kHz (SAMPLE_RATE) with what we do in this loop
+        //getting about 460kHz (SAMPLE_RATE) with what we do in this loop
         // (36MHz adc_ker_ck_input * 80 clock cycles per iteration)
-        // ok oscope is saying about 500kHz
         for i in 0..BUFFER_SIZE
         {
             test_bit.toggle();
@@ -178,27 +194,47 @@ fn main() -> ! {
 
         // loggit!("Volume:{:?}", volume);
 
-        let hann_window = hann_window(&fbuf);
+        // let hann_window = hann_window(&fbuf);
 
-        // calc spectra
-        let dtmf_spectrum = samples_fft_to_spectrum(
-            &hann_window,
-            SAMPLE_RATE,
-            FrequencyLimit::Range(600f32, 1700f32),
-            Some(&divide_by_N),
-        )
-            .unwrap();
+        // calc spectra with fft
+        // let dtmf_spectrum = samples_fft_to_spectrum(
+        //     &hann_window,
+        //     SAMPLE_RATE,
+        //     FrequencyLimit::Range(600f32, 1700f32),
+        //     Some(&divide_by_N),
+        // )
+        //     .unwrap();
         // for (fr, fr_val) in dtmf_spectrum.data().iter() {
         //     loggit!("{}Hz => {}", fr, fr_val)
         // }
+        // let remote_spectrum = samples_fft_to_spectrum(
+        //     &hann_window,
+        //     SAMPLE_RATE,
+        //     FrequencyLimit::Range(37_000f32, 42_000f32),
+        //     Some(&divide_by_N),
+        // )
+        //     .unwrap();
 
-        let remote_spectrum = samples_fft_to_spectrum(
-            &hann_window,
-            SAMPLE_RATE,
-            FrequencyLimit::Range(37_000f32, 42_000f32),
-            Some(&divide_by_N),
-        )
-            .unwrap();
+
+        //calc goertzel frequencies
+        let mut filter_results = HashMap::new();
+        for (freq, mut filter) in &filters {
+            filter_results.insert(freq, filter.clone().process(&fbuf));
+        }
+        let remote_buttons = [
+            RemoteButtonEval::new(
+                RemoteSignals::CHANNEL_DN,
+                *filter_results.get(&FreqKey::from(RemFreqs::CHANNEL_DN)).unwrap_or(&0f32)),
+            RemoteButtonEval::new(
+                RemoteSignals::VOLUME,
+                *filter_results.get(&FreqKey::from(RemFreqs::VOLUME)).unwrap_or(&0f32)),
+            RemoteButtonEval::new(
+                RemoteSignals::OFF_ON,
+                *filter_results.get(&FreqKey::from(RemFreqs::OFF_ON)).unwrap_or(&0f32)),
+            RemoteButtonEval::new(
+                RemoteSignals::CHANNEL_UP,
+                *filter_results.get(&FreqKey::from(RemFreqs::CHANNEL_UP)).unwrap_or(&0f32)),
+        ];
 
         test_bit.toggle();
         if bit {
@@ -208,38 +244,79 @@ fn main() -> ! {
         }
         bit = !bit;
 
-        let remote_buttons = [
-            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_DN, &remote_spectrum),
-            RemoteButtonEval::from_spectrum(RemoteSignals::VOLUME, &remote_spectrum),
-            RemoteButtonEval::from_spectrum(RemoteSignals::OFF_ON, &remote_spectrum),
-            RemoteButtonEval::from_spectrum(RemoteSignals::CHANNEL_UP, &remote_spectrum),
-        ];
+        //ok this got too confusing for me and the compiler i think
+        // let buttons = [
+        //     DtmfSignals::_1, DtmfSignals::_2, DtmfSignals::_3, DtmfSignals::_A,
+        //     DtmfSignals::_4, DtmfSignals::_5, DtmfSignals::_6, DtmfSignals::_B,
+        //     DtmfSignals::_7, DtmfSignals::_8, DtmfSignals::_9, DtmfSignals::_C,
+        //     DtmfSignals::_STAR, DtmfSignals::_0, DtmfSignals::_POUND, DtmfSignals::_D,
+        // ];
+        // let rows = [DtmfFreqs::ROW_A, DtmfFreqs::ROW_B, DtmfFreqs::ROW_C, DtmfFreqs::ROW_D, ];
+        // let cols = [DtmfFreqs::COL_1, DtmfFreqs::COL_2, DtmfFreqs::COL_3, DtmfFreqs::COL_A, ];
+        // let mut b: usize = 0;
+        // let dtmf_keypad:[[DtmfButtonEval; 4]; 4] = rows.map(|r| {
+        //     b = b + 1;
+        //     cols.map(|c|
+        //         DtmfButtonEval::new(buttons[b-1].clone(),
+        //                             *filter_results.get(&FreqKey::from(r)).unwrap_or(&0f32),
+        //                             *filter_results.get(&FreqKey::from(c)).unwrap_or(&0f32))
+        //     ).iter().cloned().collect()
+        // }).iter().cloned().collect();
 
         let dtmf_keypad = [
             [
-                DtmfButtonEval::from_spectrum(DtmfSignals::_1, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_2, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_3, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_A, &dtmf_spectrum),
-            ],
-            [
-                DtmfButtonEval::from_spectrum(DtmfSignals::_4, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_5, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_6, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_B, &dtmf_spectrum),
-            ],
-            [
-                DtmfButtonEval::from_spectrum(DtmfSignals::_7, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_8, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_9, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_C, &dtmf_spectrum),
-            ],
-            [
-                DtmfButtonEval::from_spectrum(DtmfSignals::_STAR, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_0, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_POUND, &dtmf_spectrum),
-                DtmfButtonEval::from_spectrum(DtmfSignals::_D, &dtmf_spectrum),
-            ],
+                DtmfButtonEval::new(DtmfSignals::_STAR,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_D)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_1)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_0,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_D)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_2)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_POUND,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_D)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_3)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_D,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_D)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_A)).unwrap_or(&0f32)),
+            ], [
+                DtmfButtonEval::new(DtmfSignals::_7,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_C)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_1)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_8,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_C)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_2)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_9,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_C)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_3)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_C,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_C)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_A)).unwrap_or(&0f32)),
+            ], [
+                DtmfButtonEval::new(DtmfSignals::_4,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_B)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_1)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_5,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_B)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_2)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_6,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_B)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_3)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_B,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_B)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_A)).unwrap_or(&0f32)),
+            ], [
+                DtmfButtonEval::new(DtmfSignals::_1,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_A)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_1)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_2,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_A)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_2)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_3,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_A)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_3)).unwrap_or(&0f32)),
+                DtmfButtonEval::new(DtmfSignals::_A,
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::ROW_A)).unwrap_or(&0f32),
+                                    *filter_results.get(&FreqKey::from(DtmfFreqs::COL_A)).unwrap_or(&0f32)),
+            ]
         ];
 
         //--- display updates

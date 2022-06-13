@@ -1,5 +1,6 @@
 use spectrum_analyzer::{FrequencyLimit, FrequencySpectrum};
 
+#[derive(Clone)]
 pub struct ButtonFrequency {
     pub frequency: f32,
     pub power_threshold: f32,
@@ -7,47 +8,72 @@ pub struct ButtonFrequency {
     pub lower_bandwidth: f32,
 }
 
+#[derive(Clone)]
 pub struct DtmfButtonEval {
-    button:DtmfButtonSignal<'static>,
+    button: DtmfButtonSignal<'static>,
     //the max power reading for the lower frequency of this button
-    power_a:f32,
-    power_b:f32,
+    power_row: f32,
+    power_col: f32,
 }
+
 impl DtmfButtonEval {
-    pub fn from_spectrum(button:DtmfButtonSignal<'static>, spectrum:&FrequencySpectrum) -> DtmfButtonEval {
-        let (power_a, power_b) = button.pwr_in_spectrum(spectrum);
-        DtmfButtonEval{
+    pub fn from_spectrum(button: DtmfButtonSignal<'static>, spectrum: &FrequencySpectrum) -> DtmfButtonEval {
+        let (power_row, power_col) = button.pwr_in_spectrum(spectrum);
+        DtmfButtonEval {
             button,
-            power_a,
-            power_b,
+            power_row,
+            power_col,
+        }
+    }
+    pub fn new(button: DtmfButtonSignal<'static>, power_row: f32, power_col: f32) -> DtmfButtonEval {
+        DtmfButtonEval {
+            button,
+            power_row,
+            power_col,
         }
     }
     pub fn either_triggered(&self) -> bool {
-        self.power_a > self.button.freq_a.power_threshold ||
-            self.power_b > self.button.freq_b.power_threshold
+        self.power_row > self.button.row_freq.power_threshold ||
+            self.power_col > self.button.col_freq.power_threshold
     }
     pub fn triggered(&self) -> bool {
-        self.power_a > self.button.freq_a.power_threshold &&
-            self.power_b > self.button.freq_b.power_threshold
+        self.power_row > self.button.row_freq.power_threshold &&
+            self.power_col > self.button.col_freq.power_threshold
     }
 }
 
+pub struct DtmfFreqs;
 
+impl DtmfFreqs {
+    //named after the last button in the row
+    pub const ROW_A: f32 = 697f32;
+    pub const ROW_B: f32 = 770f32;
+    pub const ROW_C: f32 = 852f32;
+    pub const ROW_D: f32 = 941f32;
+    //named after the first button in the column
+    pub const COL_1: f32 = 1209f32;
+    pub const COL_2: f32 = 1336f32;
+    pub const COL_3: f32 = 1477f32;
+    pub const COL_A: f32 = 1633f32;
+}
+
+#[derive(Clone)]
 pub struct DtmfButtonSignal<'a> {
     pub name: &'a str,
     pub short_name: &'a str,
-    pub freq_a: ButtonFrequency,
-    pub freq_b: ButtonFrequency,
+    pub row_freq: ButtonFrequency,
+    pub col_freq: ButtonFrequency,
 }
+
 impl DtmfButtonSignal<'static> {
     fn pwr_in_spectrum(&self, spectrum: &FrequencySpectrum) -> (f32, f32) {
         let limit_a = FrequencyLimit::Range(
-            self.freq_a.frequency - self.freq_a.lower_bandwidth,
-            self.freq_a.frequency + self.freq_a.upper_bandwidth,
+            self.row_freq.frequency - self.row_freq.lower_bandwidth,
+            self.row_freq.frequency + self.row_freq.upper_bandwidth,
         );
         let limit_b = FrequencyLimit::Range(
-            self.freq_b.frequency - self.freq_b.lower_bandwidth,
-            self.freq_b.frequency + self.freq_b.upper_bandwidth,
+            self.col_freq.frequency - self.col_freq.lower_bandwidth,
+            self.col_freq.frequency + self.col_freq.upper_bandwidth,
         );
         (
             max_pwr_in_range(spectrum, limit_a),
@@ -66,14 +92,14 @@ impl DtmfSignals {
     pub const _1: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "1",
         short_name: "1",
-        freq_a: ButtonFrequency {
-            frequency: 697f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1209f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_1,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -82,14 +108,14 @@ impl DtmfSignals {
     pub const _2: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "2",
         short_name: "2",
-        freq_a: ButtonFrequency {
-            frequency: 697f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1336f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_2,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -98,14 +124,14 @@ impl DtmfSignals {
     pub const _3: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "3",
         short_name: "3",
-        freq_a: ButtonFrequency {
-            frequency: 697f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1477f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_3,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -114,14 +140,14 @@ impl DtmfSignals {
     pub const _A: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "A",
         short_name: "A",
-        freq_a: ButtonFrequency {
-            frequency: 697f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1633f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -130,14 +156,14 @@ impl DtmfSignals {
     pub const _4: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "4",
         short_name: "4",
-        freq_a: ButtonFrequency {
-            frequency: 770f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_B,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1209f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_1,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -146,14 +172,14 @@ impl DtmfSignals {
     pub const _5: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "5",
         short_name: "5",
-        freq_a: ButtonFrequency {
-            frequency: 770f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_B,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1336f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_2,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -162,14 +188,14 @@ impl DtmfSignals {
     pub const _6: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "6",
         short_name: "6",
-        freq_a: ButtonFrequency {
-            frequency: 770f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_B,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1477f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_3,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -178,14 +204,14 @@ impl DtmfSignals {
     pub const _B: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "B",
         short_name: "B",
-        freq_a: ButtonFrequency {
-            frequency: 770f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_B,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1633f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -194,14 +220,14 @@ impl DtmfSignals {
     pub const _7: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "7",
         short_name: "7",
-        freq_a: ButtonFrequency {
-            frequency: 852f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_C,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1209f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_1,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -210,14 +236,14 @@ impl DtmfSignals {
     pub const _8: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "8",
         short_name: "8",
-        freq_a: ButtonFrequency {
-            frequency: 852f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_C,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1336f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_2,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -226,14 +252,14 @@ impl DtmfSignals {
     pub const _9: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "9",
         short_name: "9",
-        freq_a: ButtonFrequency {
-            frequency: 852f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_C,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1477f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_3,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -242,14 +268,14 @@ impl DtmfSignals {
     pub const _C: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "C",
         short_name: "C",
-        freq_a: ButtonFrequency {
-            frequency: 852f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_C,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1633f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -258,14 +284,14 @@ impl DtmfSignals {
     pub const _STAR: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "STAR",
         short_name: "*",
-        freq_a: ButtonFrequency {
-            frequency: 941f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_D,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1209f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_1,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -274,14 +300,14 @@ impl DtmfSignals {
     pub const _0: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "0",
         short_name: "0",
-        freq_a: ButtonFrequency {
-            frequency: 941f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_D,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1336f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_2,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -290,14 +316,14 @@ impl DtmfSignals {
     pub const _POUND: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "POUND",
         short_name: "#",
-        freq_a: ButtonFrequency {
-            frequency: 941f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_D,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1477f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_3,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
@@ -306,14 +332,14 @@ impl DtmfSignals {
     pub const _D: DtmfButtonSignal<'static> = DtmfButtonSignal {
         name: "D",
         short_name: "D",
-        freq_a: ButtonFrequency {
-            frequency: 941f32,
+        row_freq: ButtonFrequency {
+            frequency: DtmfFreqs::ROW_D,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
         },
-        freq_b: ButtonFrequency {
-            frequency: 1633f32,
+        col_freq: ButtonFrequency {
+            frequency: DtmfFreqs::COL_A,
             power_threshold: STD_THRESHOLD,
             upper_bandwidth: HALF_BANDWIDTH,
             lower_bandwidth: HALF_BANDWIDTH,
